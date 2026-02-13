@@ -1,11 +1,1 @@
-{
-  "name": "globejobs",
-  "version": "0.2.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "node server.js",
-    "build": "node -e \"console.log('No build step required')\"",
-    "start": "node server.js"
-  }
-}
+{"name":"globejobs","version":"1.0.0","private":true,"dependencies":{"vite":"^3.0.0","react":"^18.0.0","typescript":"^4.5.0","axios":"^0.24.0","tailwindcss":"^3.0.0"}}
