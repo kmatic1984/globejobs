@@ -8,12 +8,13 @@ export type Job = {
   postedDate: string;
   source: string;
   logo?: string;
-  url?: string;
+  applyUrl: string;
+  tags?: string[];
+  remote?: boolean;
 };
 
 export type JobSearchParams = {
   query: string;
   location: string;
-  page?: number;
   limit?: number;
 };

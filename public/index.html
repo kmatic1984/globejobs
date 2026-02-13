@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GlobeJobs</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #f3f4f6; color: #111827; }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      .card { background: #fff; border-radius: 10px; border: 1px solid #e5e7eb; padding: 16px; margin-bottom: 14px; }
+      .search { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 20px; }
+      input, button { padding: 12px; border-radius: 8px; border: 1px solid #d1d5db; }
+      button { background: #2563eb; color: #fff; border: none; cursor: pointer; }
+      .muted { color: #6b7280; }
+      .title { margin: 0 0 4px; }
+      @media (max-width: 800px){ .search{grid-template-columns:1fr;} }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>GlobeJobs</h1>
+      <p class="muted">Search active (non-expired) jobs from free global platforms by keyword and location.</p>
+      <form id="searchForm" class="search">
+        <input id="search" placeholder="Job title, company, skill" />
+        <input id="location" placeholder="City, country, or Remote" />
+        <button type="submit">Search Jobs</button>
+      </form>
+      <p id="status" class="muted"></p>
+      <div id="jobs"></div>
+    </div>
+    <script>
+      const statusEl = document.getElementById('status');
+      const jobsEl = document.getElementById('jobs');
+      const locationInput = document.getElementById('location');
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(async ({ coords }) => {
+          try {
+            const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}&addressdetails=1`;
+            const res = await fetch(url);
+            const data = await res.json();
+            const city = data.address?.city || data.address?.town || data.address?.village || '';
+            const country = data.address?.country || '';
+            const place = `${city}${city && country ? ', ' : ''}${country}`;
+            if (place) locationInput.value = place;
+          } catch {}
+        });
+      }
+
+      function renderJobs(jobs) {
+        if (!jobs.length) {
+          jobsEl.innerHTML = '<p class="muted">No active jobs found for this query/location.</p>';
+          return;
+        }
+        jobsEl.innerHTML = jobs.map((job) => `
+          <article class="card">
+            <h3 class="title">${job.title}</h3>
+            <div class="muted">${job.company} • ${job.location} • ${job.source}</div>
+            <p>${job.description.slice(0, 220)}...</p>
+            <a href="${job.applyUrl}" target="_blank" rel="noopener noreferrer">Apply Now</a>
+          </article>
+        `).join('');
+      }
+
+      async function searchJobs(e) {
+        e.preventDefault();
+        statusEl.textContent = 'Searching...';
+        jobsEl.innerHTML = '';
+
+        const params = new URLSearchParams({
+          search: document.getElementById('search').value,
+          location: locationInput.value,
+          limit: '30'
+        });
+
+        const res = await fetch(`/api/jobs?${params.toString()}`);
+        const payload = await res.json();
+
+        if (!res.ok || payload.success === false) {
+          statusEl.textContent = payload.error || 'Unable to fetch jobs right now.';
+          jobsEl.innerHTML = '';
+          return;
+        }
+
+        statusEl.textContent = `Found ${payload.total} active jobs${payload.partialData ? ' (partial data: one provider unavailable)' : ''}`;
+        renderJobs(payload.jobs || []);
+      }
+
+      document.getElementById('searchForm').addEventListener('submit', searchJobs);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "globejobs-functions",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "scripts": {
+    "lint": "node --check index.js",
+    "serve": "firebase emulators:start --only functions,hosting"
+  },
+  "dependencies": {
+    "firebase-functions": "^5.1.1"
+  }
+}

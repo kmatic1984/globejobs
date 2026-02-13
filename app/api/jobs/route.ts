@@ -1,119 +1,145 @@
-import { NextResponse } from 'next/server';
-import { jobService } from '@/lib/services/jobService';
-import { JobSearchParams } from '@/app/types';
-import { rateLimit } from '@/lib/rate-limit';
-import { getToken } from 'next-auth/jwt';
+import { NextRequest, NextResponse } from 'next/server';
+import { Job } from '@/app/types';
 
-// Rate limiting configuration
-const limiter = rateLimit({
-  interval: 60 * 1000, // 1 minute
-  uniqueTokenPerInterval: 500, // Max 500 requests per interval
-});
+const MAX_JOB_AGE_DAYS = 30;
 
-export async function GET(request: Request) {
+type RemotiveResponse = {
+  jobs: Array<{
+    id: number;
+    title: string;
+    company_name: string;
+    candidate_required_location: string;
+    description: string;
+    publication_date: string;
+    salary?: string;
+    url: string;
+    company_logo_url?: string;
+    tags?: string[];
+  }>;
+};
+
+type ArbeitnowResponse = {
+  data: Array<{
+    slug: string;
+    title: string;
+    company_name: string;
+    location: string;
+    description: string;
+    created_at: number;
+    remote: boolean;
+    tags: string[];
+    url: string;
+    company_logo?: string;
+  }>;
+};
+
+const isFreshJob = (postedDate: string) => {
+  const posted = new Date(postedDate);
+  if (Number.isNaN(posted.getTime())) return false;
+  const ageMs = Date.now() - posted.getTime();
+  return ageMs >= 0 && ageMs <= MAX_JOB_AGE_DAYS * 24 * 60 * 60 * 1000;
+};
+
+const normalize = (jobs: Job[], query: string, location: string, limit: number) => {
+  const lowerQuery = query.toLowerCase();
+  const lowerLocation = location.toLowerCase();
+
+  return jobs
+    .filter((job) => isFreshJob(job.postedDate))
+    .filter((job) => {
+      const q = lowerQuery.length === 0
+        || job.title.toLowerCase().includes(lowerQuery)
+        || job.company.toLowerCase().includes(lowerQuery)
+        || job.tags?.some((tag) => tag.toLowerCase().includes(lowerQuery));
+
+      const locationMatch = lowerLocation.length === 0
+        || job.location.toLowerCase().includes(lowerLocation)
+        || (job.remote && lowerLocation.includes('remote'));
+
+      return q && locationMatch;
+    })
+    .sort((a, b) => new Date(b.postedDate).getTime() - new Date(a.postedDate).getTime())
+    .slice(0, limit);
+};
+
+const fetchRemotiveJobs = async (): Promise<Job[]> => {
+  const response = await fetch('https://remotive.com/api/remote-jobs', {
+    next: { revalidate: 1800 },
+  });
+
+  if (!response.ok) return [];
+
+  const data = (await response.json()) as RemotiveResponse;
+
+  return data.jobs.map((job) => ({
+    id: `remotive-${job.id}`,
+    title: job.title,
+    company: job.company_name,
+    location: job.candidate_required_location || 'Worldwide',
+    description: job.description.replace(/<[^>]+>/g, ' ').trim(),
+    salary: job.salary || undefined,
+    postedDate: job.publication_date,
+    source: 'Remotive',
+    logo: job.company_logo_url,
+    applyUrl: job.url,
+    tags: job.tags || [],
+    remote: true,
+  }));
+};
+
+const fetchArbeitnowJobs = async (): Promise<Job[]> => {
+  const response = await fetch('https://www.arbeitnow.com/api/job-board-api', {
+    next: { revalidate: 1800 },
+  });
+
+  if (!response.ok) return [];
+
+  const data = (await response.json()) as ArbeitnowResponse;
+
+  return data.data.map((job) => ({
+    id: `arbeitnow-${job.slug}`,
+    title: job.title,
+    company: job.company_name,
+    location: job.location || (job.remote ? 'Remote' : 'Not specified'),
+    description: job.description.replace(/<[^>]+>/g, ' ').trim(),
+    postedDate: new Date(job.created_at * 1000).toISOString(),
+    source: 'Arbeitnow',
+    logo: job.company_logo,
+    applyUrl: job.url,
+    tags: job.tags,
+    remote: job.remote,
+  }));
+};
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const query = searchParams.get('search')?.trim() || '';
+  const location = searchParams.get('location')?.trim() || '';
+  const limit = Math.min(Number(searchParams.get('limit') || '30'), 60);
+
   try {
-    // Apply rate limiting
-    const identifier = request.headers.get('x-forwarded-for') || 'anonymous';
-    const { isRateLimited, limit, remaining } = await limiter.check(10, identifier); // 10 requests per minute
+    const [remotive, arbeitnow] = await Promise.all([
+      fetchRemotiveJobs(),
+      fetchArbeitnowJobs(),
+    ]);
 
-    // Set rate limit headers
-    const headers = new Headers();
-    headers.set('X-RateLimit-Limit', limit.toString());
-    headers.set('X-RateLimit-Remaining', remaining.toString());
+    const jobs = normalize([...remotive, ...arbeitnow], query, location, limit);
 
-    if (isRateLimited) {
-      return new NextResponse(
-        JSON.stringify({ error: 'Too many requests' }),
-        { status: 429, headers }
-      );
-    }
-
-    // Get query parameters with type validation
-    const { searchParams } = new URL(request.url);
-    const search = searchParams.get('search')?.trim() || '';
-    const location = searchParams.get('location')?.trim() || '';
-    const limitParam = searchParams.get('limit');
-    const limit = Math.min(parseInt(limitParam || '25', 10) || 25, 50);
-
-    // Validate input
-    if (search.length > 100) {
-      return NextResponse.json(
-        { error: 'Search query is too long' },
-        { status: 400, headers }
-      );
-    }
-
-    // Get user session if available
-    const session = await getToken({ req: request as any });
-    
-    // Log the search for analytics (in production, you'd want to store this in a database)
-    if (process.env.NODE_ENV === 'production') {
-      console.log(`Job search: ${search} in ${location} (user: ${session?.email || 'anonymous'})`);
-    }
-
-    // Fetch jobs from job boards
-    const searchParams: JobSearchParams = {
-      query: search,
-      location: location,
-      limit,
-      userId: session?.sub, // Pass user ID for personalized results if needed
-    };
-
-    const { jobs, total, error } = await jobService.searchJobs(searchParams);
-
-    if (error) {
-      return NextResponse.json(
-        { error: error.message || 'Failed to fetch jobs' },
-        { status: error.status || 500, headers }
-      );
-    }
-
-    // Add cache control headers
-    headers.set('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=600');
-
-    return new NextResponse(
-      JSON.stringify({ 
-        success: true, 
-        data: { 
-          jobs, 
-          total,
-          page: 1,
-          limit,
-          hasMore: total > limit
-        } 
-      }),
-      { status: 200, headers }
-    );
+    return NextResponse.json({
+      success: true,
+      jobs,
+      total: jobs.length,
+      freshnessWindowDays: MAX_JOB_AGE_DAYS,
+    });
   } catch (error) {
-    console.error('Error in jobs API route:', error);
-    
-    // Handle specific error types
-    if (error instanceof Error) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: process.env.NODE_ENV === 'development' 
-            ? error.message 
-            : 'An unexpected error occurred' 
-        },
-        { status: 500 }
-      );
-    }
-    
+    console.error('Unable to fetch jobs', error);
+
     return NextResponse.json(
-      { success: false, error: 'An unknown error occurred' },
-      { status: 500 }
+      {
+        success: false,
+        error: 'Failed to load job feeds. Please try again shortly.',
+      },
+      { status: 502 }
     );
   }
-}
-
-// Add OPTIONS method for CORS preflight
-// This is important for API routes that might be called from the browser
-export async function OPTIONS() {
-  const headers = new Headers();
-  headers.set('Access-Control-Allow-Origin', process.env.NEXT_PUBLIC_ALLOWED_ORIGINS || '*');
-  headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  return new NextResponse(null, { status: 204, headers });
 }
