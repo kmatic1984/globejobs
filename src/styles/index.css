@@ -1,12 +1,11 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+.bg-primary {
+  @apply bg-blue-500;
+}
 
-/* Custom global styles */
+.text-primary {
+  @apply text-white;
+}
+
 body {
-    font-family: 'Arial', sans-serif;
-    margin: 0;
-    padding: 0;
-    background-color: #f9fafb; /* Light background color */
-    color: #111827; /* Dark text color */
+  @apply bg-primary text-primary;
 }
